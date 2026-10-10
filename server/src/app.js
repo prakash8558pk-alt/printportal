@@ -1,5 +1,7 @@
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import indexRoutes from "./routes/index.js";
 import { errorHandler } from "./middlewares/error.middleware.js";
 
@@ -7,7 +9,10 @@ import { errorHandler } from "./middlewares/error.middleware.js";
 const app = express();
 
 /* ---------------- Middlewares ---------------- */
-app.use(cors());
+app.set('trust proxy', 1);
+app.use(helmet());
+app.use(cors({ origin: (process.env.CLIENT_ORIGIN || '').split(',') }));
+app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

@@ -1,32 +1,10 @@
-import http from "http";
-import dotenv from "dotenv";
-import mongoose from "mongoose";
-
-import app from "./app.js";
-import { initSocket } from "./config/socket.js";
-
-dotenv.config();
-
-/* ---------------- Environment ---------------- */
-const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI;
-
-/* ---------------- Create HTTP Server ---------------- */
+import 'dotenv/config';
+import http from 'node:http';
+import app from './app.js';
+import { initSocket } from './config/socket.js';
+import { initDatabase } from './config/turso.js';
+if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN || !process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) throw new Error('Set Turso URL/token and a JWT secret of at least 32 characters');
+await initDatabase();
 const server = http.createServer(app);
-
-/* ---------------- Socket.io Init ---------------- */
 initSocket(server);
-
-/* ---------------- MongoDB Connection ---------------- */
-mongoose
-    .connect(MONGO_URI)
-    .then(() => {
-        console.log("✅ MongoDB connected");
-
-        server.listen(PORT, () => {
-            console.log(`🚀 Server running on port ${PORT}`);
-        });
-    })
-    .catch((err) => {
-        console.error("❌ MongoDB connection error:", err.message);
-    });
+server.listen(process.env.PORT || 5000, '0.0.0.0', () => console.log('PrintPortal API ready'));
