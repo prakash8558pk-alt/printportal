@@ -5,8 +5,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js"
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",
@@ -14,17 +15,18 @@
   "dependencies": {
     "axios": "^1.13.3",
     "bcryptjs": "^3.0.3",
-    "cloudinary": "^1.41.3",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
-    "mongoose": "^9.1.1",
     "multer": "^2.0.2",
-    "multer-storage-cloudinary": "^4.0.0",
-    "socket.io": "^4.8.3"
+    "socket.io": "^4.8.3",
+    "@libsql/client": "^0.18.0",
+    "helmet": "^8.1.0",
+    "express-rate-limit": "^8.2.1"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.11"
+  "devDependencies": {},
+  "engines": {
+    "node": ">=22.12.0"
   }
 }
