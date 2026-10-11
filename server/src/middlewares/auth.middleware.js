@@ -8,7 +8,6 @@ export const requireRole = (roles) => {
             return next();
         }
 
-        console.log(`Auth Middleware: ${req.method} ${req.originalUrl}`);
 
         let token;
 
@@ -26,7 +25,7 @@ export const requireRole = (roles) => {
         }
 
         try {
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ["HS256"] });
 
             if (!roles.includes(decoded.role)) {
                 return res.status(403).json({ message: "Access denied" });
@@ -39,7 +38,7 @@ export const requireRole = (roles) => {
                 return res.status(401).json({ message: "Session expired or account disabled" });
             }
 
-            if (decoded.tokenVersion !== user.tokenVersion) {
+            if (decoded.tokenVersion !== user.tokenVersion || decoded.role !== user.role) {
                 return res.status(401).json({ message: "Session terminated. Please login again." });
             }
 
