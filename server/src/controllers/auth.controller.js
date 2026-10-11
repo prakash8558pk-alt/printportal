@@ -10,7 +10,10 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 
 /* ---------------- REGISTER ORGANIZATION (NEW SAAS FLOW) ---------------- */
 export const signupOrganization = asyncHandler(async (req, res) => {
-    const { orgName, adminName, email, password, subscriptionPlan } = req.body;
+    const { orgName, adminName, password } = req.body;
+    const email = String(req.body.email || '').trim().toLowerCase();
+    if (process.env.ALLOW_SIGNUP !== 'true') throw new ApiError(403, 'Public signup is disabled.');
+    if (!orgName || !adminName || !email.includes('@') || typeof password !== 'string' || password.length < 12) throw new ApiError(400, 'Provide a valid email, names and a password with at least 12 characters.');
 
     // 1. Check if user already exists
     const existingUser = await User.findOne({ email });
@@ -22,7 +25,7 @@ export const signupOrganization = asyncHandler(async (req, res) => {
     const organization = await Organization.create({
         name: orgName,
         adminEmail: email,
-        subscriptionPlan: subscriptionPlan || "STARTER"
+        subscriptionPlan: "STARTER"
     });
 
     // 3. Create Admin User linked to Organization
@@ -66,7 +69,8 @@ export const signupOrganization = asyncHandler(async (req, res) => {
 
 /* ---------------- LOGIN (ALL ROLES) ---------------- */
 export const login = asyncHandler(async (req, res) => {
-    const { email, password, role } = req.body;
+    const { password, role } = req.body;
+    const email = String(req.body.email || "").trim().toLowerCase();
 
     const user = await User.findOne({ email, role }).select("+password");
 

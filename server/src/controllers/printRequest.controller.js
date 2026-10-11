@@ -4,7 +4,8 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 import fs from "fs";
 import path from "path";
-import cloudinary from "../config/cloudinary.js";
+import { db } from "../config/turso.js";
+import { randomUUID } from "node:crypto";
 
 /* ----------------------------------------
    CREATE PRINT REQUEST (Employee)
@@ -16,18 +17,19 @@ export const createPrintRequest = asyncHandler(async (req, res) => {
         throw new ApiError(400, "File is required");
     }
 
-    if (!title || !copies || !printType || !deliveryType || !dueDateTime) {
+    if (!title || title.length>200 || !Number.isInteger(Number(copies)) || Number(copies)<1 || Number(copies)>1000 || !['SINGLE_SIDE','DOUBLE_SIDE'].includes(printType) || !['PICKUP','ROOM_DELIVERY'].includes(deliveryType) || !dueDateTime || Number.isNaN(Date.parse(dueDateTime))) {
         // Clean up uploaded file if validation fails
         if (req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
         throw new ApiError(400, "Missing required fields");
     }
 
+    const fileId = randomUUID();
     const newRequest = await PrintRequest.create({
         employee: req.user.userId,
         organization: req.user.organizationId,
         title,
-        fileUrl: req.file.path, // Cloudinary URL
-        cloudinaryId: req.file.filename, // Cloudinary Public ID
+        fileUrl: fileId,
+        cloudinaryId: null,
         fileType: req.file.mimetype,
         fileSize: req.file.size,
         originalName: req.file.originalname,
@@ -38,6 +40,9 @@ export const createPrintRequest = asyncHandler(async (req, res) => {
         dueDateTime: new Date(dueDateTime),
     });
 
+    try {
+      await db.execute({sql:'INSERT INTO print_files(id,organization,employee,mime,name,content) VALUES (?,?,?,?,?,?)',args:[fileId,req.user.organizationId,req.user.userId,req.file.mimetype,req.file.originalname,req.file.buffer]});
+    } catch (err) { await newRequest.deleteOne(); throw err; }
     res.status(201).json({
         success: true,
         message: "Print request created successfully",
@@ -60,7 +65,12 @@ export const getPrintRequests = asyncHandler(async (req, res) => {
         query.employee = userId;
     }
 
-    if (status) query.status = status;
+    if (role === 'PRINTING') query.status = { $in: ['APPROVED', 'IN_PROGRESS', 'COMPLETED'] };
+    if (status) {
+      if (!['PENDING','APPROVED','REJECTED','IN_PROGRESS','COMPLETED'].includes(status)) throw new ApiError(400,'Invalid status');
+      if (role === 'PRINTING' && !['APPROVED','IN_PROGRESS','COMPLETED'].includes(status)) throw new ApiError(403,'Denied');
+      query.status = status;
+    }
 
     const skip = (page - 1) * limit;
 
@@ -172,6 +182,8 @@ export const updatePrintStatus = asyncHandler(async (req, res) => {
     if (!request) throw new ApiError(404, "Print request not found");
     if (request.organization.toString() !== req.user.organizationId) throw new ApiError(403, "Access denied");
 
+    const allowed = { APPROVED: 'IN_PROGRESS', IN_PROGRESS: 'COMPLETED' };
+    if (allowed[request.status] !== status) throw new ApiError(400, 'Invalid status transition');
     request.status = status;
     await request.save();
 
@@ -215,167 +227,21 @@ export const getPrintFileSignedUrl = asyncHandler(async (req, res) => {
 /* ----------------------------------------
    SERVE FILE CONTENT (Stream)
 ----------------------------------------- */
-export const servePrintFile = asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const { role, userId } = req.user;
+async function sendFile(req,res,download) {
+ const request = await PrintRequest.findById(req.params.id);
+ if (!request || request.organization !== req.user.organizationId) throw new ApiError(404,'File not found');
+ if (req.user.role === 'EMPLOYEE' && request.employee !== req.user.userId) throw new ApiError(403,'Denied');
+ if (req.user.role === 'PRINTING' && !['APPROVED','IN_PROGRESS','COMPLETED'].includes(request.status)) throw new ApiError(403,'Denied');
+ if (download && req.query.json === 'true') return res.json({success:true, useStream:true});
+ const result = await db.execute({sql:'SELECT mime,name,content FROM print_files WHERE id=? AND organization=?',args:[request.fileUrl,req.user.organizationId]});
+ const file = result.rows[0]; if (!file) throw new ApiError(404,'File missing');
+ const safeName = String(file.name).replace(/[^a-zA-Z0-9_.-]/g,'_');
+ res.set('Content-Type',file.mime); res.set('Cache-Control','private, no-store'); res.set('Content-Disposition',`${download?'attachment':'inline'}; filename="${safeName}"`);
+ res.send(Buffer.from(file.content));
+}
+export const servePrintFile = asyncHandler((req,res)=>sendFile(req,res,false));
+export const downloadPrintFile = asyncHandler((req,res)=>sendFile(req,res,true));
 
-    console.log(`[ServeFile] Request for ID: ${id} by User: ${userId} (${role})`);
-
-    const request = await PrintRequest.findById(id);
-    if (!request) {
-        console.error(`[ServeFile] Request ${id} not found in DB`);
-        return res.status(404).send("File not found");
-    }
-
-    if (request.organization.toString() !== req.user.organizationId) {
-        console.error(`[ServeFile] Org mismatch`);
-        return res.status(403).send("Denied");
-    }
-
-    let canAccess = false;
-    if (role === "ADMIN" || role === "PRINTING") canAccess = true;
-    else if (role === "EMPLOYEE" && request.employee.toString() === userId) canAccess = true;
-
-    if (!canAccess) {
-        console.error(`[ServeFile] Access Denied for role ${role}`);
-        return res.status(403).send("Denied");
-    }
-
-    // Cloudinary Serve (Primary - Private & Signed)
-    if (request.cloudinaryId) {
-        // Generate Signed URL dynamically
-        // Note: For PDFs/Docs 'resource_type' handles the switch between 'image' and 'raw/video' etc.
-        // 'auto' might not solve it for url() method as nicely as upload().
-        // We can infer from fileUrl or attempt 'auto'.
-        // However, cloudinary.url default resource_type is 'image'.
-
-        let resourceType = 'image';
-        if (request.fileType === 'application/pdf') resourceType = 'image'; // Cloudinary treats PDF as image for delivery often, but 'raw' for others.
-        // Actually, for creating a link to the original file:
-        // Use 'auto' if possible, or infer.
-        // Safest is to check fileType.
-
-        if (!request.fileType.startsWith('image/') && request.fileType !== 'application/pdf') {
-            resourceType = 'raw';
-            // Note: PDFs are 'image' resource_type in Cloudinary typically? 
-            // Actually, PDF upload as 'auto' -> usually 'image'.
-            // Docx/Zip upload as 'auto' -> 'raw'.
-        }
-
-        // Better heuristic: if URL contains '/raw/', it is raw.
-        if (request.fileUrl && request.fileUrl.includes('/raw/')) {
-            resourceType = 'raw';
-        }
-
-        const url = cloudinary.url(request.cloudinaryId, {
-            resource_type: resourceType,
-            type: 'private',
-            sign_url: true,
-            secure: true,
-            expires_in: 3600 // 1 hour access
-        });
-
-        console.log(`[ServeFile] Redirecting to Signed URL: ${url}`);
-        return res.redirect(url);
-    }
-
-    // Legacy Public/Local Fallback
-    if (request.fileUrl && request.fileUrl.startsWith('http')) {
-        console.log(`[ServeFile] Redirecting to Public Cloudinary: ${request.fileUrl}`);
-        return res.redirect(request.fileUrl);
-    }
-
-    // Local File Fallback (For legacy files)
-    console.log(`[ServeFile] DB stored path: ${request.fileUrl}`);
-
-    const filePath = path.resolve(request.fileUrl);
-    console.log(`[ServeFile] Resolved FS Path: ${filePath}`);
-
-    if (!fs.existsSync(filePath)) {
-        console.error(`[ServeFile] FILE MISSING AT PATH: ${filePath}`);
-        // Fallback: Try looking in 'uploads' relative to cwd if absolute failed?
-        const fallbackPath = path.join(process.cwd(), 'uploads', path.basename(request.fileUrl));
-        if (fs.existsSync(fallbackPath)) {
-            console.log(`[ServeFile] Found at fallback path: ${fallbackPath}`);
-            res.setHeader('Content-Type', request.fileType || 'application/octet-stream');
-            res.setHeader('Content-Disposition', `inline; filename="${request.originalName}"`);
-            return res.sendFile(fallbackPath);
-        }
-
-        return res.status(404).send("File missing on disk");
-    }
-
-    res.setHeader('Content-Type', request.fileType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `inline; filename="${request.originalName}"`);
-
-    res.sendFile(filePath);
-});
-
-/* ----------------------------------------
-   DOWNLOAD FILE (Printing Dept)
------------------------------------------ */
-export const downloadPrintFile = asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const request = await PrintRequest.findById(id);
-    if (!request) throw new ApiError(404, "Not found");
-    if (request.organization.toString() !== req.user.organizationId) throw new ApiError(403, "Denied");
-
-    // Check if it's a Cloudinary file
-    if (request.cloudinaryId) {
-        // Generate Signed URL with 'attachment' flag to force download
-        // We need to infer resource_type. Default to 'image' (which covers PDF often), but check fileType.
-        let resourceType = 'image';
-        if (!request.fileType.startsWith('image/') && request.fileType !== 'application/pdf') {
-            resourceType = 'raw';
-        }
-        // If it looks like a raw file from URL
-        if (request.fileUrl && request.fileUrl.includes('/raw/')) {
-            resourceType = 'raw';
-        }
-
-        const url = cloudinary.url(request.cloudinaryId, {
-            resource_type: resourceType,
-            type: 'private',
-            sign_url: true,
-            secure: true,
-            expires_in: 3600,
-            flags: "attachment" // Force download
-        });
-
-        console.log(`[Download] Redirecting to Cloudinary: ${url}`);
-
-        // Notify before redirecting (optional, but good for tracking)
-        const io = getIO();
-        io.to(req.user.organizationId).emit("notify_employee", {
-            type: "FILE_DOWNLOADED",
-            requestId: request._id,
-            message: "Printing dept downloaded your file",
-        });
-
-        if (req.query.json === 'true') {
-            return res.json({ success: true, downloadUrl: url });
-        }
-
-        return res.redirect(url);
-    }
-
-    // Local File Fallback
-    const filePath = path.resolve(request.fileUrl);
-    if (!fs.existsSync(filePath)) throw new ApiError(404, "File missing on server");
-
-    const io = getIO();
-    io.to(req.user.organizationId).emit("notify_employee", {
-        type: "FILE_DOWNLOADED",
-        requestId: request._id,
-        message: "Printing dept downloaded your file",
-    });
-
-    res.download(filePath, request.originalName);
-});
-
-/* ----------------------------------------
-   DELETE PRINT REQUEST
------------------------------------------ */
 export const deletePrintRequest = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { role, userId } = req.user;
@@ -394,24 +260,7 @@ export const deletePrintRequest = asyncHandler(async (req, res) => {
     if (!canDelete) throw new ApiError(403, "Not authorized to delete this request");
 
     // Delete from Cloudinary if it exists
-    if (request.cloudinaryId) {
-        try {
-            await cloudinary.uploader.destroy(request.cloudinaryId);
-            console.log(`[Delete] Removed Cloudinary file: ${request.cloudinaryId}`);
-        } catch (err) {
-            console.error("Failed to delete Cloudinary file:", err);
-        }
-    } else if (request.fileUrl && !request.fileUrl.startsWith('http')) {
-        // Local file deletion fallback
-        const filePath = path.resolve(request.fileUrl);
-        if (fs.existsSync(filePath)) {
-            try {
-                fs.unlinkSync(filePath);
-            } catch (err) {
-                console.error("Failed to delete local file:", err);
-            }
-        }
-    }
+    await db.execute({sql:'DELETE FROM print_files WHERE id=? AND organization=?',args:[request.fileUrl,req.user.organizationId]});
 
     await request.deleteOne();
 

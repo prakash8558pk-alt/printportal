@@ -1,4 +1,4 @@
-import mongoose from "mongoose";
+
 import PrintRequest from "../models/PrintRequest.js";
 
 export const getDashboardStats = async (req, res) => {
@@ -19,7 +19,7 @@ export const getDashboardStats = async (req, res) => {
 
         // Employee: only see their own requests
         if (role === "EMPLOYEE") {
-            filter.employee = new mongoose.Types.ObjectId(userId);
+            filter.employee = userId;
         }
         // Printing: only see approved/processing/completed (usually they don't care about pending/rejected)
         // But for "stats" we might just show them what they have worked on or what is available.
@@ -34,7 +34,7 @@ export const getDashboardStats = async (req, res) => {
         if (!req.user.organizationId) {
             throw new Error("Organization ID missing from user context");
         }
-        filter.organization = new mongoose.Types.ObjectId(req.user.organizationId);
+        filter.organization = req.user.organizationId;
 
         // Aggregation for performance
         const results = await PrintRequest.aggregate([

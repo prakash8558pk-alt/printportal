@@ -8,8 +8,9 @@ import Organization from "../models/Organization.js";
 
 /* ---------------- CREATE NEW USER (ADMIN ONLY) ---------------- */
 export const createUser = asyncHandler(async (req, res) => {
-    const { name, email, password, role } = req.body;
-    console.log("Create User Request:", req.body, "User Context:", req.user);
+    const { name, password, role } = req.body;
+    const email = String(req.body.email || '').trim().toLowerCase();
+    if (!name || !email.includes('@') || typeof password !== 'string' || password.length < 12) throw new ApiError(400, 'Name, valid email and a password with at least 12 characters required.');
 
     // Allow creation of EMPLOYEE and PRINTING roles
     if (!["EMPLOYEE", "PRINTING"].includes(role)) {
@@ -105,7 +106,7 @@ export const deleteUser = asyncHandler(async (req, res) => {
 
     const user = await User.findById(id);
 
-    if (!user) {
+    if (!user || user.organization !== req.user.organizationId) {
         throw new ApiError(404, "User not found");
     }
 
@@ -115,6 +116,7 @@ export const deleteUser = asyncHandler(async (req, res) => {
         throw new ApiError(400, "Cannot delete your own account");
     }
 
+    await RefreshToken.deleteMany({ user: id });
     await User.findByIdAndDelete(id);
 
     res.json({
@@ -129,7 +131,7 @@ export const terminateSession = asyncHandler(async (req, res) => {
 
     const user = await User.findById(id);
 
-    if (!user) {
+    if (!user || user.organization !== req.user.organizationId) {
         throw new ApiError(404, "User not found");
     }
 
