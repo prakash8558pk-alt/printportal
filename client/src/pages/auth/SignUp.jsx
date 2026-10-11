@@ -26,8 +26,8 @@ const SignUp = () => {
         const form = new FormData(e.target);
         const data = Object.fromEntries(form.entries());
 
-        if (data.password.length < 6) {
-            setError("Password must be at least 6 characters long");
+        if (data.password.length < 12) {
+            setError("Password must be at least 12 characters long");
             setLoading(false);
             return;
         }
