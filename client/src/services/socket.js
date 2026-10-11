@@ -8,6 +8,7 @@ export const initSocketConnection = () => {
 
     socket = io(import.meta.env.VITE_SOCKET_URL || "http://localhost:5000", {
         transports: ["websocket"],
+        auth: (cb) => cb({ token: localStorage.getItem("token") }),
         reconnection: true,
     });
 
