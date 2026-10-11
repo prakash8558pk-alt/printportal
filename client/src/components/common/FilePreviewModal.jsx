@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import Modal from "../ui/Modal";
 import api from "../../services/api";
 import StatusBadge from "../StatusBadge";
-import * as mammoth from "mammoth";
+import DOMPurify from "dompurify";
 import JSZip from "jszip";
 
 const FilePreviewModal = ({
@@ -154,7 +154,8 @@ const FilePreviewModal = ({
                     } else if (isDocx) {
                         try {
                             const arrayBuffer = await blob.arrayBuffer();
-                            const result = await mammoth.convertToHtml({ arrayBuffer });
+                            throw new Error("Word preview is disabled; download the document to view it.");
+                            const result = { value: "" };
                             if (active) setHtmlContent(result.value);
                         } catch (err) {
                             console.error("Docx conversion failed", err);
@@ -390,7 +391,7 @@ const FilePreviewModal = ({
                                 </div>
                             ) : (htmlContent) ? (
                                 <div className="w-full h-full overflow-y-auto p-4 lg:p-12 bg-white flex justify-center">
-                                    <div className="prose max-w-3xl w-full shadow-sm p-8 bg-white border border-gray-100 min-h-full" dangerouslySetInnerHTML={{ __html: htmlContent }} />
+                                    <div className="prose max-w-3xl w-full shadow-sm p-8 bg-white border border-gray-100 min-h-full" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(htmlContent) }} />
                                 </div>
                             ) : (
                                 // OFFICE / OTHER FILES
